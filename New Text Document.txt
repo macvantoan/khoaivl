@@ -1,0 +1,990 @@
+package com.valuestreamer.backend.kpieditor.service.impl;
+
+import com.valuestreamer.backend.Constants;
+import com.valuestreamer.backend.authorization.JwtTokenService;
+import com.valuestreamer.backend.boards.model.BoardElement;
+import com.valuestreamer.backend.boards.repository.BoardElementRepository;
+import com.valuestreamer.backend.common.ResponseApi;
+import com.valuestreamer.backend.common.StringUtil;
+import com.valuestreamer.backend.common.UserLogin;
+import com.valuestreamer.backend.common.exception.ObjectNotFoundException;
+import com.valuestreamer.backend.kpi.dto.KpiCategoryDtoInKpi;
+import com.valuestreamer.backend.kpieditor.dto.*;
+import com.valuestreamer.backend.kpieditor.mapper.KpiMapper;
+import com.valuestreamer.backend.kpieditor.model.KpiEditor;
+import com.valuestreamer.backend.kpieditor.model.KpiUnit;
+import com.valuestreamer.backend.kpieditor.model.KpiValues;
+import com.valuestreamer.backend.kpieditor.model.enums.*;
+import com.valuestreamer.backend.kpieditor.repository.KpiDataEditorRepository;
+import com.valuestreamer.backend.kpieditor.repository.KpiEditorRepository;
+import com.valuestreamer.backend.kpieditor.repository.KpiValuesRepository;
+import com.valuestreamer.backend.kpieditor.repository.TeamGetKpiEditorRepository;
+import com.valuestreamer.backend.kpieditor.request.CreateOrUpdateKpiRequest;
+import com.valuestreamer.backend.kpieditor.request.UpdateKpiCoreRequest;
+import com.valuestreamer.backend.kpieditor.service.KpiEditorService;
+import com.valuestreamer.backend.sqcdp.models.kpiCategory;
+import com.valuestreamer.backend.sqcdp.models.kpiCategoryOrder;
+import com.valuestreamer.backend.sqcdp.repository.SqcdpRepository;
+import com.valuestreamer.backend.sqcdp.repository.TeamKpiCategoryRepository;
+import com.valuestreamer.backend.teams.model.Team;
+import com.valuestreamer.backend.teams.repository.TeamRepository;
+import com.valuestreamer.backend.translations.common.Translation;
+import com.valuestreamer.backend.translations.dto.MultiLanguageDto;
+import com.valuestreamer.backend.translations.model.Language;
+import com.valuestreamer.backend.translations.model.Message;
+import com.valuestreamer.backend.translations.model.Translations;
+import com.valuestreamer.backend.translations.repository.LanguageRepository;
+import com.valuestreamer.backend.translations.repository.MessageRepository;
+import com.valuestreamer.backend.translations.repository.TranslationRepository;
+import com.valuestreamer.backend.users.exception.UserPermissionDenied;
+import com.valuestreamer.backend.users.model.User;
+import com.valuestreamer.backend.users.service.UserService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+
+import javax.persistence.EntityManager;
+import javax.servlet.http.HttpServletRequest;
+import javax.transaction.Transactional;
+import java.util.*;
+import java.util.stream.Collectors;
+
+import static com.valuestreamer.backend.Constants.DE;
+
+/**
+ * @author thanglt on 1/25/2021
+ * @version 1.0
+ */
+@Service
+public class KpiEditorServiceImpl implements KpiEditorService {
+    private final KpiEditorRepository kpiEditorRepository;
+    private final UserLogin userLogin;
+    private final LanguageRepository languageRepository;
+    private final TranslationRepository translationRepository;
+    private final MessageRepository messageRepository;
+    private final EntityManager em;
+    private final KpiValuesRepository kpiValuesRepository;
+    private final KpiDataEditorRepository kpiDataEditorRepository;
+    private final BoardElementRepository boardElementRepository;
+    private final JwtTokenService jwtTokenService;
+    private final UserService userService;
+    private final KpiMapper kpiMapper;
+    private final TeamGetKpiEditorRepository teamGetKpiEditorRepository;
+    private final TeamKpiCategoryRepository teamKpiCategoryRepository;
+    private final SqcdpRepository sqcdpRepository;
+    private final TeamRepository teamRepository;
+    private static final String KPI_TITLE = "kpi_title";
+    private static final String KPI = "kpi";
+    private static final String KPI_VALUE = "kpi_value";
+    private static final String KPI_VALUE_NAME = "kpi_value_name";
+    private static final String RESULT = "Result";
+    private static final String ERGEBNIS = "Ergebnis";
+
+    public KpiEditorServiceImpl(KpiEditorRepository kpiEditorRepository,
+                                UserLogin userLogin, LanguageRepository languageRepository,
+                                MessageRepository messageRepository,
+                                EntityManager em, KpiValuesRepository kpiValuesRepository,
+                                KpiDataEditorRepository kpiDataEditorRepository,
+                                BoardElementRepository boardElementRepository,
+                                TranslationRepository translationRepository, JwtTokenService jwtTokenService, UserService userService,
+                                KpiMapper kpiMapper, TeamGetKpiEditorRepository teamGetKpiEditorRepository, TeamKpiCategoryRepository teamKpiCategoryRepository, SqcdpRepository sqcdpRepository, TeamRepository teamRepository) {
+        this.kpiEditorRepository = kpiEditorRepository;
+        this.userLogin = userLogin;
+        this.translationRepository = translationRepository;
+        this.languageRepository = languageRepository;
+        this.messageRepository = messageRepository;
+        this.em = em;
+        this.kpiValuesRepository = kpiValuesRepository;
+        this.kpiDataEditorRepository = kpiDataEditorRepository;
+        this.boardElementRepository = boardElementRepository;
+        this.jwtTokenService = jwtTokenService;
+        this.userService = userService;
+        this.kpiMapper = kpiMapper;
+        this.teamGetKpiEditorRepository = teamGetKpiEditorRepository;
+        this.teamKpiCategoryRepository = teamKpiCategoryRepository;
+        this.sqcdpRepository = sqcdpRepository;
+        this.teamRepository = teamRepository;
+    }
+
+    @Transactional(rollbackOn = Exception.class)
+    @Override
+    public ResponseApi createOrUpdate(HttpServletRequest request,
+                                      CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        ResponseApi response = new ResponseApi();
+        response.setCode(String.valueOf(Constants.CODE_OK));
+        response.setMessage(Constants.RESPONSE_ENTRY_OK);
+        KpiEditor kpiEditor;
+        // check role sys admin
+        if (!userLogin.checkUserAuthenticate(request, null)) {
+            throw new UserPermissionDenied(Constants.RESPONSE_PERMISSION_DENIED);
+        }
+        if (createOrUpdateKpi.getId() == null) {
+             kpiEditor = new KpiEditor();
+            // create kpi editor
+            this.setCreateKpi(kpiEditor, createOrUpdateKpi);
+            kpiEditor = kpiEditorRepository.save(kpiEditor);
+            // create kpi values
+            List<KpiValues> kpiValuesList = this.setCreateKpiValues(kpiEditor, createOrUpdateKpi);
+            kpiEditor.setKpiValues(kpiValuesList);
+            kpiValuesRepository.saveAll(kpiValuesList);
+            boardElementRepository.save(this.setCreateBoardElement(kpiEditor));
+
+        } else {
+            Optional<KpiEditor> optional = kpiEditorRepository.findById(createOrUpdateKpi.getId());
+            if (optional.isEmpty()) {
+                throw new ObjectNotFoundException(KpiEditor.class, createOrUpdateKpi.getId(), Constants.RESPONSE_NOT_FOUND_KPI_ID);
+            }
+            List<UUID> ListTeamId = teamGetKpiEditorRepository.getListTeamIdByKpiId(createOrUpdateKpi.getId());
+            UUID idCategory = kpiEditorRepository.getCategoryId(createOrUpdateKpi.getId());
+            kpiCategory kpiCategoryss = sqcdpRepository.findAllById(idCategory);
+            kpiCategory kpiCategorys = sqcdpRepository.findAllById(createOrUpdateKpi.getIdCategory());
+            List<Team> ListTeam = teamRepository.getAllByTeamId(ListTeamId);
+            kpiCategoryOrder kpiCategoryOrderNew = new kpiCategoryOrder();
+//            ListTeamId.removeIf(t -> t.get)
+            //performance
+            List<UUID> idTeamList = new ArrayList<>();
+            Integer len = ListTeam.size();
+            if(!createOrUpdateKpi.getIdCategory().equals(idCategory)) {
+                for (int i = 0; i < len; i++) {
+                    List<KpiEditor> kpiEditorList = kpiEditorRepository.findKpiEditorByTeamIdAndCategoryIds(ListTeam.get(i).getId(), createOrUpdateKpi.getIdCategory());
+                    if (kpiEditorList.size() < 1) {
+                        kpiCategoryOrderNew.setCategoryId(kpiCategorys);
+                        kpiCategoryOrderNew.setTeamId(ListTeam.get(i));
+                        kpiCategoryOrderNew.setOrderId(i);
+                        teamKpiCategoryRepository.save(kpiCategoryOrderNew);
+                    }
+                }
+            }
+            if(!createOrUpdateKpi.getIdCategory().equals(idCategory)) {
+                for (int i = 0; i < len; i++) {
+                    List<KpiEditor> kpiEditorList = kpiEditorRepository.findKpiEditorByTeamIdAndCategoryIds(ListTeam.get(i).getId(), idCategory);
+                    if (kpiEditorList.size() == 1) {
+                        idTeamList.add(ListTeam.get(i).getId());
+//                        teamKpiCategoryRepository.deleteAllByTeamIdAndKpiCategoryId(ListTeam.get(i).getId(),idCategory);
+                    }
+                }
+                   teamKpiCategoryRepository.deleteAllByTeamIdAndKpiCategoryIds(idTeamList,idCategory);
+
+            }
+            //
+            kpiEditor = optional.get();
+            Set<KpiEditor> kpiEditorSet = kpiEditorRepository.findAllBySubKpiParentId(createOrUpdateKpi.getId());
+            // update kpi editor
+            kpiEditorSet = this.setUpdateKpi(kpiEditorSet, kpiEditor, createOrUpdateKpi);
+            // save kpi editor
+            kpiEditorRepository.saveAll(kpiEditorSet);
+            // update kpi values
+            List<KpiValues> kpiValuesList = this.setUpdateKpiValues(kpiEditor, createOrUpdateKpi);
+            kpiValuesRepository.saveAll(kpiValuesList);
+            kpiEditor.setKpiValues(kpiValuesList);
+            kpiEditorRepository.save(kpiEditor);
+
+        }
+        // create or update translations
+        this.saveCreateOrUpdateTranslation(kpiEditor, createOrUpdateKpi);
+
+        response.setData(true);
+        return response;
+    }
+
+    // set Create BoardElement
+    private BoardElement setCreateBoardElement(KpiEditor kpiEditor) {
+        BoardElement boardElement = new BoardElement();
+        boardElement.setBoardElementType(KPI.toUpperCase());
+        boardElement.setKtk("2");
+        boardElement.setKey(kpiEditor.getTitle().toUpperCase().replace(" ", "_"));
+        boardElement.setKpiId(kpiEditor);
+        // find list keys like key
+        List<String> keys = boardElementRepository.findLikeKey(boardElement.getKey());
+        int size = keys.size();
+        if (size > 0) {
+            // add key with max key size
+            boardElement.setKey(boardElement.getKey() + size);
+        }
+        return boardElement;
+    }
+
+    // create or update translation kpi editor
+    private void saveCreateOrUpdateTranslation(
+            KpiEditor kpiEditor, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        List<Translations> translations = new ArrayList<>();
+        String kpiId = kpiEditor.getId().toString().replace("-", "").toUpperCase();
+        List<KpiValues> kpiValues = kpiEditor.getKpiValues();
+        // Get kpiValueActual
+        List<KpiValues> listKpiValueActual = kpiValues.stream().filter(k -> !k.isCalculated() && k.getValueType().equals(EnumValueType.ACTUAL))
+                .sorted(Comparator.comparingInt(KpiValues::getOrderId)).collect(Collectors.toList());
+        Message message = Translation.checkMessage(KPI_TITLE, KPI, messageRepository);
+        List<Language> languages = Translation.getAllLanguage(languageRepository);
+        List<Translations> translationsList = Translation.getAllTranslationsBySourceAndMessage(translationRepository, kpiId, KPI_TITLE);
+        translations.addAll(Translation.setTranslate(languages, translationsList, message, kpiId, createOrUpdateKpi.getTitle()));
+        this.setTranslate(translations, createOrUpdateKpi, kpiValues, listKpiValueActual, languages, KPI_VALUE_NAME, KPI_VALUE);
+        // save all translations
+        translationRepository.saveAll(translations);
+    }
+
+    // Set data create transaction EN
+    private void setTranslate(List<Translations> translations,
+                              CreateOrUpdateKpiRequest createOrUpdateKpi, List<KpiValues> kpiValues,
+                              List<KpiValues> listKpiValueActual, List<Language> languages, String messageKey, String sourceTable) {
+        Message message = Translation.checkMessage(messageKey, sourceTable, messageRepository);
+        List<UUID> kpiValueIds = kpiValues.stream().map(KpiValues::getId).collect(Collectors.toList());
+        List<Translations> translationsAllValueList = new ArrayList<>();
+        if (kpiValueIds.size() > 0)
+            translationsAllValueList = Translation.getAllTranslationsBySourceInAndMessageKey(translationRepository, kpiValueIds, messageKey);
+        List<UUID> kpiActualIds = listKpiValueActual.stream().map(KpiValues::getId).collect(Collectors.toList());
+        List<Translations> translationsAllActualList = new ArrayList<>();
+        if (kpiActualIds.size() > 0)
+            translationsAllActualList = Translation.getAllTranslationsBySourceInAndMessageKey(translationRepository, kpiActualIds, messageKey);
+
+        for (KpiValues kpiValue : kpiValues) {
+            String kpiValueId = null;
+            if (kpiValue.getId() != null)
+                kpiValueId = kpiValue.getId().toString().replace("-", "").toUpperCase();
+//            Translations translationKpiValue = new Translations();
+//            translationKpiValue.setLanguage(language);
+//            translationKpiValue.setMessage(messageKpiValue);
+//            translationKpiValue.setSourceTablePrimaryKey(kpiValueId);
+            /* if Set create translation for kpiValues with ValueType is TARGET
+             else Set create translation for kpiValues with ValueType is ACTUAL and calculated is true
+            */
+            if (kpiValue.getValueType().equals(EnumValueType.TARGET)) {
+                List<MultiLanguageDto> targetValues = createOrUpdateKpi.getTargetValue();
+//                Optional<MultiLanguageDto> targetValue = targetValues.stream().filter(t -> t.getLanguage().equalsIgnoreCase(language.getKey())).findFirst();
+//                translationKpiValue.setTranslation(targetValue.get().getValue());
+                String finalKpiValueId = kpiValueId;
+                List<Translations> translationsList = translationsAllValueList.stream().filter(t -> t.getSourceTablePrimaryKey().equalsIgnoreCase(finalKpiValueId) && t.getMessage().equals(message)).collect(Collectors.toList());
+                translations.addAll(Translation.setTranslate(languages, translationsList, message, kpiValueId, targetValues));
+            } else if (kpiValue.getValueType().equals(EnumValueType.ACTUAL) && kpiValue.isCalculated()) {
+//                translationKpiValue.setTranslation(RESULT);
+//                translations.add(translationKpiValue);
+            }
+            // Set create translation for kpiValues with ValueType is ACTUAL
+            for (int i = 0; i < createOrUpdateKpi.getActualValue().size(); i++) {
+//                Translations translationKpiValueActual = new Translations();
+//                translationKpiValueActual.setLanguage(language);
+//                translationKpiValueActual.setMessage(messageKpiValue);
+//                translationKpiValueActual.setSourceTablePrimaryKey(valueId);
+//                Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase(language.getKey())).findFirst();
+//
+                String valueId = null;
+                if (listKpiValueActual.get(i).getId() != null)
+                    valueId = listKpiValueActual.get(i).getId().toString().replace("-", "").toUpperCase();
+                String finalValueId = valueId;
+                List<Translations> translationsList = translationsAllActualList.stream().filter(t -> t.getSourceTablePrimaryKey().equalsIgnoreCase(finalValueId) && t.getMessage().equals(message)).collect(Collectors.toList());
+                List<MultiLanguageDto> names = createOrUpdateKpi.getActualValue().get(i).getName();
+                translations.addAll(Translation.setTranslate(languages, translationsList, message, valueId, names));
+            }
+        }
+    }
+
+
+    // save Message with key of table
+    private Message checkMessage(String key, String sourceTable) {
+        // title message
+        Message message = this.findById(key);
+        if (message == null) {
+            message = new Message();
+            message.setKey(key);
+            message.setSourceTable(sourceTable);
+        }
+        messageRepository.save(message);
+        return message;
+    }
+
+    // find Message by key
+    private Message findById(String key) {
+        Optional<Message> optionalMessage = messageRepository.findById(key);
+        return optionalMessage.orElse(null);
+    }
+
+    // Set create kpi editor
+    private void setCreateKpi(KpiEditor kpiEditor, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        List<MultiLanguageDto> titles = createOrUpdateKpi.getTitle();
+        Optional<MultiLanguageDto> dto = titles.stream().filter(t -> t.getLanguage().equalsIgnoreCase("EN")).findFirst();
+        String title = dto.get().getValue();
+        kpiEditor.setTitle(title);
+        kpiEditor.setKpiUnit(em.find(KpiUnit.class, createOrUpdateKpi.getKpiUnit()));
+        kpiEditor.setKpiValueIsInteger(createOrUpdateKpi.isKpiValueIsInteger());
+        kpiEditor.setKpiValueTimeReference(createOrUpdateKpi.getKpiValueTimeReference());
+        kpiEditor.setKpiValueInsertionRefersCurrent(createOrUpdateKpi.isKpiValueInsertionRefersCurrent());
+        if (createOrUpdateKpi.getTargetValueType() != null) {
+            kpiEditor.setTargetValueType(createOrUpdateKpi.getTargetValueType());
+        }
+        if (createOrUpdateKpi.getActualValueResultCalculationLogic() != null) {
+            kpiEditor.setActualValueResultCalculationLogic(createOrUpdateKpi.getActualValueResultCalculationLogic());
+        }
+        kpiEditor.setXUnitShowDate(createOrUpdateKpi.isXUnitShowDate());
+        if (!createOrUpdateKpi.isXUnitShowDate()) {
+            kpiEditor.setXAxisValuesCalculation(createOrUpdateKpi.getXAxisValuesCalculation());
+        }
+        kpiEditor.setVisualizationTypeActual(createOrUpdateKpi.getVisualizationTypeActual());
+        kpiEditor.setVisualizationTypeTarget(createOrUpdateKpi.getVisualizationTypeTarget());
+        kpiEditor.setVisualizationTypeActualCalculated(createOrUpdateKpi.getVisualizationTypeActualCalculated());
+        kpiEditor.setYMinmaxAutoadjustment(createOrUpdateKpi.isYMinmaxAutoadjustment());
+        if (!createOrUpdateKpi.isYMinmaxAutoadjustment()) {
+            kpiEditor.setYMin(createOrUpdateKpi.getYMin());
+            kpiEditor.setYMax(createOrUpdateKpi.getYMax());
+        }
+        if (createOrUpdateKpi.getAggregationLogicTarget() != null) {
+            kpiEditor.setAggregationLogicTarget(createOrUpdateKpi.getAggregationLogicTarget());
+        }
+        if (createOrUpdateKpi.getAggregationLogicActual() != null) {
+            kpiEditor.setAggregationLogicActual(createOrUpdateKpi.getAggregationLogicActual());
+        }
+        if (createOrUpdateKpi.getTargetValueGlobalOne() != null) {
+            kpiEditor.setTargetValueGlobalOne(createOrUpdateKpi.getTargetValueGlobalOne());
+        }
+        if (createOrUpdateKpi.getTargetValueGlobalYmin() != null) {
+            kpiEditor.setTargetValueGlobalYmin(createOrUpdateKpi.getTargetValueGlobalYmin());
+        }
+        if (createOrUpdateKpi.getTargetValueGlobalYmax() != null) {
+            kpiEditor.setTargetValueGlobalYmax(createOrUpdateKpi.getTargetValueGlobalYmax());
+        }
+        if (createOrUpdateKpi.getStatusRuleRedWhenChildRed() != null) {
+            kpiEditor.setStatusRuleRedWhenChildRed(createOrUpdateKpi.getStatusRuleRedWhenChildRed());
+        }
+        if (createOrUpdateKpi.getStatusRule() != null) {
+            kpiEditor.setStatusRule(createOrUpdateKpi.getStatusRule());
+        }
+        if (createOrUpdateKpi.getStatusRule() != null) {
+            kpiEditor.setStatusRule(createOrUpdateKpi.getStatusRule());
+        }
+        if(createOrUpdateKpi.getIdCategory() != null){
+            kpiCategory kpiCategorys = sqcdpRepository.findByCategoryId(createOrUpdateKpi.getIdCategory());
+            kpiEditor.setKpiCategoryId(kpiCategorys);
+        }
+        kpiEditor.setIsDeleted(false);
+    }
+
+    private List<KpiValues> setCreateKpiValues(KpiEditor kpi, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        List<KpiValues> kpiValues = new ArrayList<>();
+        KpiValues kpiValue;
+        /**
+         * if save TargetValue MINMAX
+         * else save TargetValue ONE
+         */
+        if (createOrUpdateKpi.getTargetValueType() != null &&
+                createOrUpdateKpi.getTargetValueType().equals(EnumTargetValueType.MINMAX)) {
+            this.setCreateKpiValueMinMax(kpiValues, kpi, createOrUpdateKpi);
+        } else if (createOrUpdateKpi.getTargetValueType() != null &&
+                createOrUpdateKpi.getTargetValueType().equals(EnumTargetValueType.ONE)) {
+            this.setCreateKpiValueOne(kpiValues, kpi, createOrUpdateKpi);
+        }
+        // save list actual name
+        for (int i = 0; i < createOrUpdateKpi.getActualValue().size(); i++) {
+            kpiValue = new KpiValues();
+            kpiValue.setKpi(kpi);
+            // set Actual name EN
+            List<MultiLanguageDto> names = createOrUpdateKpi.getActualValue().get(i).getName();
+            Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+            kpiValue.setName(name.get().getValue());
+            kpiValue.setOrderId(createOrUpdateKpi.getActualValue().get(i).getOrderId());
+            kpiValue.setValueType(EnumValueType.ACTUAL);
+            kpiValue.setColor(createOrUpdateKpi.getActualValue().get(i).getColor());
+            kpiValues.add(kpiValue);
+        }
+        if (createOrUpdateKpi.getActualValueResultCalculationLogic() != null) {
+            kpiValue = new KpiValues();
+            kpiValue.setKpi(kpi);
+            // set Actual name EN
+            kpiValue.setName(RESULT);
+            kpiValue.setOrderId(createOrUpdateKpi.getActualValue().size() + 1);
+            kpiValue.setValueType(EnumValueType.ACTUAL);
+            kpiValue.setColor(createOrUpdateKpi.getActualCalculatedColor());
+            kpiValue.setCalculated(true);
+            kpiValues.add(kpiValue);
+        }
+        return kpiValues;
+    }
+
+    //set update KpiValues to kpi
+    private List<KpiValues> setUpdateKpiValues(KpiEditor kpi, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        List<KpiValues> kpiValues = kpi.getKpiValues();
+        List<KpiValues> kpiValueNews = new ArrayList<>();
+
+        List<KpiValues> kpiValueTargets = kpiValues.stream().filter(target -> target.getValueType().equals(EnumValueType.TARGET)).collect(Collectors.toList());
+        /**
+         * if save TargetValue MINMAX
+         * else save TargetValue ONE
+         */
+        if (createOrUpdateKpi.getTargetValueType() != null &&
+                createOrUpdateKpi.getTargetValueType().equals(EnumTargetValueType.MINMAX)) {
+            if (kpiValueTargets.size() > 0) {
+                for (KpiValues kpiValueTarget : kpiValueTargets) {
+                    if (kpiValueTarget.getTargetType().equals(EnumTargetType.MIN)) {
+                        kpiValueTarget.setOrderId(1);
+                        List<MultiLanguageDto> names = createOrUpdateKpi.getTargetValue();
+                        Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+                        kpiValueTarget.setName(name.get().getValue());
+                        kpiValueTarget.setColor(createOrUpdateKpi.getTargetValueColor());
+                        kpiValueNews.add(kpiValueTarget);
+                    } else if (kpiValueTarget.getTargetType().equals(EnumTargetType.MAX)) {
+                        kpiValueTarget.setOrderId(2);
+                        List<MultiLanguageDto> names = createOrUpdateKpi.getTargetValue();
+                        Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+                        kpiValueTarget.setName(name.get().getValue());
+                        kpiValueTarget.setColor(createOrUpdateKpi.getTargetValueColor());
+                        kpiValueNews.add(kpiValueTarget);
+                    } else {
+                        this.deleteCheckBeforeUpdate(kpiValues, kpiValueTargets);
+                        // set Create KpiValues with TargetValueType is MIN, MAX
+                        this.setCreateKpiValueMinMax(kpiValueNews, kpi, createOrUpdateKpi);
+                    }
+                }
+            } else {
+                this.setCreateKpiValueMinMax(kpiValueNews, kpi, createOrUpdateKpi);
+            }
+        } else if (createOrUpdateKpi.getTargetValueType() != null &&
+                createOrUpdateKpi.getTargetValueType().equals(EnumTargetValueType.ONE)) {
+            if (kpiValueTargets.size() > 0) {
+                if (kpiValueTargets.get(0).getTargetType().equals(EnumTargetType.ONE)) {
+                    List<MultiLanguageDto> names = createOrUpdateKpi.getTargetValue();
+                    Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+                    kpiValueTargets.get(0).setName(name.get().getValue());
+//                    kpiValueTargets.get(0).setName(createOrUpdateKpi.getTargetValueEN());
+                    kpiValueTargets.get(0).setOrderId(1);
+                    kpiValueTargets.get(0).setColor(createOrUpdateKpi.getTargetValueColor());
+                    kpiValueNews.add(kpiValueTargets.get(0));
+                } else {
+                    this.deleteCheckBeforeUpdate(kpiValues, kpiValueTargets);
+                    // set Create KpiValues with TargetValueType is ONE
+                    this.setCreateKpiValueOne(kpiValueNews, kpi, createOrUpdateKpi);
+                }
+            } else {
+                this.setCreateKpiValueOne(kpiValueNews, kpi, createOrUpdateKpi);
+            }
+
+        } else {
+            this.deleteCheckBeforeUpdate(kpiValues, kpiValueTargets);
+        }
+        List<KpiValues> kpiValueActuals = kpiValues.stream().filter(target -> target.getValueType().equals(EnumValueType.ACTUAL) && !target.isCalculated()).collect(Collectors.toList());
+        int createSize = createOrUpdateKpi.getActualValue().size();
+        int actualValueSize = kpiValueActuals.size();
+        for (int i = 0; i < createSize; i++) {
+            /*
+             * if update plus record KpiValues
+             * else update same record kpiValues
+             */
+            if (i > actualValueSize - 1) {
+                KpiValues kpiValue = new KpiValues();
+                kpiValue.setKpi(kpi);
+                // set Actual name EN
+                List<MultiLanguageDto> names = createOrUpdateKpi.getActualValue().get(i).getName();
+                Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+                kpiValue.setName(name.get().getValue());
+//                kpiValue.setName(createOrUpdateKpi.getActualValue().get(i).getName().get(1));
+                kpiValue.setOrderId(createOrUpdateKpi.getActualValue().get(i).getOrderId());
+                kpiValue.setValueType(EnumValueType.ACTUAL);
+                kpiValue.setColor(createOrUpdateKpi.getActualValue().get(i).getColor());
+                kpiValueNews.add(kpiValue);
+            } else {
+                KpiValues kpiValueActual = kpiValueActuals.get(i);
+                //VT 5694
+                for (int j = 0; j < createSize; j ++){
+                    if(createOrUpdateKpi.getActualValue().get(j).getOrderId() == kpiValueActuals.get(i).getOrderId()){
+                        List<MultiLanguageDto> names = createOrUpdateKpi.getActualValue().get(j).getName();
+                        Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+                        kpiValueActual.setName(name.get().getValue());
+//                kpiValueActual.setName(createOrUpdateKpi.getActualValue().get(i).getName().get(1));
+                        kpiValueActual.setOrderId(createOrUpdateKpi.getActualValue().get(j).getOrderId());
+                        kpiValueActual.setColor(createOrUpdateKpi.getActualValue().get(j).getColor());
+                        kpiValueNews.add(kpiValueActual);
+                    }
+                }
+////
+//                List<MultiLanguageDto> names = createOrUpdateKpi.getActualValue().get(i).getName();
+//                Optional<MultiLanguageDto> name = names.stream().filter(n -> n.getLanguage().equalsIgnoreCase("EN")).findFirst();
+//                kpiValueActual.setName(name.get().getValue());
+////                kpiValueActual.setName(createOrUpdateKpi.getActualValue().get(i).getName().get(1));
+//                kpiValueActual.setOrderId(createOrUpdateKpi.getActualValue().get(i).getOrderId());
+//                kpiValueActual.setColor(createOrUpdateKpi.getActualValue().get(i).getColor());
+//                kpiValueNews.add(kpiValueActual);
+            }
+        }
+        // delete actualValue
+        List<KpiValues> kpiValueActualDeletes = new ArrayList<>();
+        if (createSize < actualValueSize) {
+            for (int i = createSize; i < actualValueSize; i++) {
+                kpiValueActualDeletes.add(kpiValueActuals.get(i));
+            }
+            kpiValuesRepository.deleteAll(kpiValueActualDeletes);
+        }
+        List<KpiValues> kpiResults = kpiValues.stream().filter(target -> target.getValueType().equals(EnumValueType.ACTUAL) && target.isCalculated()).collect(Collectors.toList());
+        if (createOrUpdateKpi.getActualValueResultCalculationLogic() != null) {
+            KpiValues kpiValue;
+            if (kpiResults.size() > 0) {
+                kpiValue = kpiResults.get(0);
+                kpiValue.setColor(createOrUpdateKpi.getActualCalculatedColor());
+                kpiValue.setOrderId(createOrUpdateKpi.getActualValue().size() + 1);
+            } else {
+                kpiValue = new KpiValues();
+                kpiValue.setKpi(kpi);
+                // set Actual name EN
+                kpiValue.setName(RESULT);
+                kpiValue.setOrderId(createOrUpdateKpi.getActualValue().size() + 1);
+                kpiValue.setValueType(EnumValueType.ACTUAL);
+                kpiValue.setColor(createOrUpdateKpi.getActualCalculatedColor());
+                kpiValue.setCalculated(true);
+            }
+            kpiValueNews.add(kpiValue);
+        } else {
+            if (kpiResults.size() > 0) {
+                kpiValuesRepository.deleteAll(kpiResults);
+                kpiValueNews.removeIf(k -> k.getValueType().equals(EnumValueType.ACTUAL) && k.isCalculated());
+            }
+        }
+        return kpiValueNews;
+    }
+
+    //
+    private void deleteCheckBeforeUpdate(List<KpiValues> kpiValues, List<KpiValues> kpiValueTargets) {
+        // delete KpiValues with ValueType is TARGET
+        kpiValuesRepository.deleteAll(kpiValueTargets);
+        // Remove list KpiValues with ValueType is TARGET
+        kpiValues.removeIf(k -> k.getValueType().equals(EnumValueType.TARGET));
+    }
+
+    // set create KpiValues by TargetValueType is MIN, MAX
+    private void setCreateKpiValueMinMax(List<KpiValues> kpiValues, KpiEditor kpi, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        for (int i = 0; i < 2; i++) {
+            KpiValues kpiValue = new KpiValues();
+            kpiValue.setKpi(kpi);
+            List<MultiLanguageDto> targetValues = createOrUpdateKpi.getTargetValue();
+            Optional<MultiLanguageDto> dto = targetValues.stream().filter(t -> t.getLanguage().equalsIgnoreCase("EN")).findFirst();
+            String targetValue = dto.get().getValue();
+            kpiValue.setName(targetValue);
+            kpiValue.setValueType(EnumValueType.TARGET);
+            kpiValue.setColor(createOrUpdateKpi.getTargetValueColor());
+            if (i == 0) {
+                kpiValue.setTargetType(EnumTargetType.MIN);
+                kpiValue.setOrderId(1);
+            } else {
+                kpiValue.setTargetType(EnumTargetType.MAX);
+                kpiValue.setOrderId(2);
+            }
+            kpiValues.add(kpiValue);
+        }
+    }
+
+    // set create KpiValues by TargetValueType is ONE
+    private void setCreateKpiValueOne(List<KpiValues> kpiValues, KpiEditor kpi, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        KpiValues kpiValueTargetOne = new KpiValues();
+        kpiValueTargetOne.setKpi(kpi);
+        List<MultiLanguageDto> targetValues = createOrUpdateKpi.getTargetValue();
+        Optional<MultiLanguageDto> dto = targetValues.stream().filter(t -> t.getLanguage().equalsIgnoreCase("EN")).findFirst();
+        String targetValue = dto.get().getValue();
+        kpiValueTargetOne.setName(targetValue);
+        kpiValueTargetOne.setOrderId(1);
+        kpiValueTargetOne.setValueType(EnumValueType.TARGET);
+        kpiValueTargetOne.setColor(createOrUpdateKpi.getTargetValueColor());
+        kpiValueTargetOne.setTargetType(EnumTargetType.ONE);
+        kpiValues.add(kpiValueTargetOne);
+    }
+
+    // set Update KpiEditor
+    private Set<KpiEditor> setUpdateKpi(Set<KpiEditor> kpiEditors, KpiEditor kpiEditor, CreateOrUpdateKpiRequest createOrUpdateKpi) {
+        List<MultiLanguageDto> titles = createOrUpdateKpi.getTitle();
+        Optional<MultiLanguageDto> dto = titles.stream().filter(t -> t.getLanguage().equalsIgnoreCase("EN")).findFirst();
+        String title = dto.get().getValue();
+        kpiEditor.setTitle(title);
+        kpiEditor.setKpiUnit(em.find(KpiUnit.class, createOrUpdateKpi.getKpiUnit()));
+        kpiEditor.setKpiValueIsInteger(createOrUpdateKpi.isKpiValueIsInteger());
+        kpiEditor.setKpiValueTimeReference(createOrUpdateKpi.getKpiValueTimeReference());
+        kpiEditor.setKpiValueInsertionRefersCurrent(createOrUpdateKpi.isKpiValueInsertionRefersCurrent());
+        kpiEditor.setTargetValueType(createOrUpdateKpi.getTargetValueType());
+        kpiEditor.setActualValueResultCalculationLogic(createOrUpdateKpi.getActualValueResultCalculationLogic());
+        kpiEditor.setXUnitShowDate(createOrUpdateKpi.isXUnitShowDate());
+        if (!createOrUpdateKpi.isXUnitShowDate()) {
+            kpiEditor.setXAxisValuesCalculation(createOrUpdateKpi.getXAxisValuesCalculation());
+        }
+        kpiEditor.setVisualizationTypeActual(createOrUpdateKpi.getVisualizationTypeActual());
+        kpiEditor.setVisualizationTypeTarget(createOrUpdateKpi.getVisualizationTypeTarget());
+        kpiEditor.setVisualizationTypeActualCalculated(createOrUpdateKpi.getVisualizationTypeActualCalculated());
+        kpiEditor.setYMinmaxAutoadjustment(createOrUpdateKpi.isYMinmaxAutoadjustment());
+        if (!createOrUpdateKpi.isYMinmaxAutoadjustment()) {
+            kpiEditor.setYMin(createOrUpdateKpi.getYMin());
+            kpiEditor.setYMax(createOrUpdateKpi.getYMax());
+        } else {
+            kpiEditor.setYMin(null);
+            kpiEditor.setYMax(null);
+        }
+        kpiEditor.setAggregationLogicTarget(createOrUpdateKpi.getAggregationLogicTarget());
+        kpiEditor.setAggregationLogicActual(createOrUpdateKpi.getAggregationLogicActual());
+        kpiEditor.setTargetValueGlobalOne(createOrUpdateKpi.getTargetValueGlobalOne());
+        kpiEditor.setTargetValueGlobalYmin(createOrUpdateKpi.getTargetValueGlobalYmin());
+        kpiEditor.setTargetValueGlobalYmax(createOrUpdateKpi.getTargetValueGlobalYmax());
+        kpiEditor.setStatusRuleRedWhenChildRed(createOrUpdateKpi.getStatusRuleRedWhenChildRed());
+        kpiEditor.setStatusRule(createOrUpdateKpi.getStatusRule());
+        kpiCategory kpiCategorys = sqcdpRepository.findByCategoryId(createOrUpdateKpi.getIdCategory());
+        kpiEditor.setKpiCategoryId(kpiCategorys);
+        //check kpi exits kpi data
+        boolean checkKpiData = this.checkKpiData(kpiEditor.getId());
+        //update subtile
+        for (KpiEditor k : kpiEditors) {
+            if (!checkKpiData) {
+                k.setKpiUnit(em.find(KpiUnit.class, createOrUpdateKpi.getKpiUnit()));
+                k.setKpiValueIsInteger(createOrUpdateKpi.isKpiValueIsInteger());
+                k.setKpiValueTimeReference(createOrUpdateKpi.getKpiValueTimeReference());
+                k.setTargetValueType(createOrUpdateKpi.getTargetValueType());
+                k.setActualValueResultCalculationLogic(createOrUpdateKpi.getActualValueResultCalculationLogic());
+                k.setXUnitShowDate(createOrUpdateKpi.isXUnitShowDate());
+                if (!createOrUpdateKpi.isXUnitShowDate()) {
+                    k.setXAxisValuesCalculation(createOrUpdateKpi.getXAxisValuesCalculation());
+                }
+                k.setVisualizationTypeActual(createOrUpdateKpi.getVisualizationTypeActual());
+                k.setVisualizationTypeTarget(createOrUpdateKpi.getVisualizationTypeTarget());
+                k.setVisualizationTypeActualCalculated(createOrUpdateKpi.getVisualizationTypeActualCalculated());
+                k.setAggregationLogicTarget(createOrUpdateKpi.getAggregationLogicTarget());
+                k.setAggregationLogicActual(createOrUpdateKpi.getAggregationLogicActual());
+                k.setTargetValueGlobalOne(createOrUpdateKpi.getTargetValueGlobalOne());
+                k.setTargetValueGlobalYmin(createOrUpdateKpi.getTargetValueGlobalYmin());
+                k.setTargetValueGlobalYmax(createOrUpdateKpi.getTargetValueGlobalYmax());
+            }
+            k.setKpiValueInsertionRefersCurrent(createOrUpdateKpi.isKpiValueInsertionRefersCurrent());
+            k.setYMinmaxAutoadjustment(createOrUpdateKpi.isYMinmaxAutoadjustment());
+            if (!createOrUpdateKpi.isYMinmaxAutoadjustment()) {
+                k.setYMin(createOrUpdateKpi.getYMin());
+                k.setYMax(createOrUpdateKpi.getYMax());
+            } else {
+                k.setYMin(null);
+                k.setYMax(null);
+            }
+            k.setStatusRuleRedWhenChildRed(createOrUpdateKpi.getStatusRuleRedWhenChildRed());
+            k.setStatusRule(createOrUpdateKpi.getStatusRule());
+            k.setKpiCategoryId(kpiCategorys);
+        }
+        kpiEditors.add(kpiEditor);
+        return kpiEditors;
+    }
+
+    @Override
+    public ResponseApi detail(HttpServletRequest request,
+                              UUID kpiId) {
+        ResponseApi response = new ResponseApi();
+        response.setCode(String.valueOf(Constants.CODE_OK));
+        response.setMessage(Constants.RESPONSE_200);
+        // check role sys admin
+        if (!userLogin.checkUserAuthenticate(request, null)) {
+            throw new UserPermissionDenied(Constants.RESPONSE_PERMISSION_DENIED);
+        }
+        Optional<KpiEditor> optional = kpiEditorRepository.findById(kpiId);
+        if (optional.isEmpty()) {
+            throw new ObjectNotFoundException(KpiEditor.class, kpiId, Constants.RESPONSE_NOT_FOUND_KPI_ID);
+        }
+        KpiEditor kpiEditor = optional.get();
+        if (kpiEditor.getIsDeleted()) {
+            throw new ObjectNotFoundException(KpiEditor.class, kpiId, Constants.RESPONSE_KPI_HAVE_DELETED);
+        }
+        // get list KpiValues with ValueType = ACTUAL
+        List<KpiValues> kpiActualValues = kpiEditor.getKpiValues().stream().filter(value -> value.getValueType().equals(EnumValueType.ACTUAL) && !value.isCalculated())
+                .sorted(Comparator.comparingInt(KpiValues::getOrderId)).collect(Collectors.toList());
+        // get list KpiValues with ValueType = TARGET
+        List<KpiValues> kpiTargetValues = kpiEditor.getKpiValues().stream().filter(value -> value.getValueType().equals(EnumValueType.TARGET)).collect(Collectors.toList());
+        // get list KpiValues with ValueType = ACTUAL
+        List<KpiValues> kpiResults = kpiEditor.getKpiValues().stream().filter(value -> value.getValueType().equals(EnumValueType.ACTUAL) && value.isCalculated()).collect(Collectors.toList());
+//        List<KpiValueDetailDto> kpiActualValueDtos = ModelMapperUtils.mapAll(kpiActualValues, KpiValueDetailDto.class);
+        List<KpiValueDetailDto> kpiActualValueDtos = kpiMapper.mapAllToKpiValueDetailDto(kpiActualValues);
+//        DetailKpiEditorDto detailKpiEditorDto = ModelMapperUtils.map(kpiEditor, DetailKpiEditorDto.class);
+        DetailKpiEditorDto detailKpiEditorDto = kpiMapper.mapToDetailDto(kpiEditor);
+        List<EnumCoreKpiType> enumCoreKpiTypes = new ArrayList<>();
+        enumCoreKpiTypes.add(EnumCoreKpiType.HITRATE_AGG);
+        enumCoreKpiTypes.add(EnumCoreKpiType.LVL_DISTURBANCE_AGG);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD_CHILD_WIP);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD_CHILD_AVG_LEAD_TIME);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD_CHILD_COMPLETED_ITEMS);
+        enumCoreKpiTypes.add(EnumCoreKpiType.ADHERENCE_TO_SCHEDULES);
+        enumCoreKpiTypes.add(EnumCoreKpiType.ADHERENCE_TO_SCHEDULES_CHILD);
+        List<UUID> ListKpis = kpiEditorRepository.getAllKpiByCategoryIds(detailKpiEditorDto.getKpiCategoryId(),enumCoreKpiTypes);
+        if(ListKpis.size() > 0){
+            detailKpiEditorDto.setListKpi(ListKpis);
+        }
+        if (kpiResults.size() > 0) {
+            detailKpiEditorDto.setActualCalculatedColor(kpiResults.get(0).getColor());
+        }
+        // sort kpiActualValueDtos by orderId
+        kpiActualValueDtos.sort(Comparator.comparingInt(KpiValueDetailDto::getOrderId));
+        if (!kpiActualValueDtos.isEmpty())
+            detailKpiEditorDto.setKpiValues(kpiActualValueDtos);
+        String titleDE = translationRepository.findTranslationByLanguageAndMessageAndKey(DE, KPI_TITLE, kpiEditor.getId().toString().replace("-", "").toUpperCase());
+        if (titleDE != null)
+            detailKpiEditorDto.setTitleDE(titleDE);
+        // set target DE detail dto
+        String targetDE = null;
+        if (!kpiTargetValues.isEmpty() && kpiTargetValues.size() > 0) {
+            detailKpiEditorDto.setIdTarget(kpiTargetValues.get(0).getId());
+            detailKpiEditorDto.setTargetValue(kpiTargetValues.get(0).getName());
+            detailKpiEditorDto.setTargetValueColor(kpiTargetValues.get(0).getColor());
+            targetDE = translationRepository.findTranslationByLanguageAndMessageAndKey(DE, KPI_VALUE_NAME, kpiTargetValues.get(0).getId().toString().replace("-", "").toUpperCase());
+        }
+        detailKpiEditorDto.setTargetValueDE(targetDE);
+        // set actual DE detail dto
+        for (int i = 0; i < kpiActualValues.size(); i++) {
+            String actualDE = translationRepository.findTranslationByLanguageAndMessageAndKey(DE, KPI_VALUE_NAME, kpiActualValues.get(i).getId().toString().replace("-", "").toUpperCase());
+            if (actualDE != null)
+                detailKpiEditorDto.getKpiValues().get(i).setNameDE(actualDE);
+        }
+        // check update kpi limit
+        if (this.checkKpiData(kpiId) || (this.isSubKpi(kpiId) && this.checkSubTileData(kpiId))) {
+            detailKpiEditorDto.setCheckUpdate(true);
+        }
+        response.setData(detailKpiEditorDto);
+        return response;
+    }
+
+    // check Kpi exist in KpiData
+    private boolean checkKpiData(UUID kpiId) {
+        List<UUID> dataIds = kpiDataEditorRepository.getIAllIdByKpiId(kpiId);
+        return dataIds.size() > 0;
+    }
+
+    // check subTile exist in KpiData
+    private boolean checkSubTileData(UUID subTileId) {
+        List<UUID> dataIds = kpiDataEditorRepository.getIAllIdBySubtileId(subTileId);
+        return dataIds.size() > 0;
+    }
+
+    // check kpi has subTitle
+    private boolean isSubKpi(UUID kpiId) {
+        List<UUID> kpis = kpiEditorRepository.findAllIdBySubKpiParent(kpiId);
+        return kpis.size() > 0;
+    }
+
+    @Transactional(rollbackOn = Exception.class)
+    @Override
+    public ResponseApi updateCoreKpi(HttpServletRequest request, UUID kpiId,
+                                     UpdateKpiCoreRequest updateKpiCoreRequest) {
+        ResponseApi response = new ResponseApi();
+        response.setCode(String.valueOf(Constants.CODE_OK));
+        response.setMessage(Constants.RESPONSE_SETTING_OK);
+        // check role sys admin
+        if (!userLogin.checkUserAuthenticate(request, null)) {
+            throw new UserPermissionDenied(Constants.RESPONSE_PERMISSION_DENIED);
+        }
+        Optional<KpiEditor> optional = kpiEditorRepository.findById(kpiId);
+        if (!optional.isPresent()) {
+            throw new ObjectNotFoundException(KpiEditor.class, kpiId, Constants.RESPONSE_NOT_FOUND_KPI_ID);
+        }
+        KpiEditor kpiEditor = optional.get();
+        if (!kpiEditor.isCoreKpi()) {
+            throw new ObjectNotFoundException(KpiEditor.class, kpiId, Constants.KPI_NOT_CORE);
+        }
+        kpiEditor.setTargetValueGlobalOne(updateKpiCoreRequest.getTargetValueGlobalOne());
+        kpiEditorRepository.save(kpiEditor);
+        response.setData(true);
+        return response;
+    }
+
+    @Override
+    public ResponseApi search(HttpServletRequest request,
+                              String search, String isSort, Boolean type,
+                              String categoriesId, int page, int pageSize) {
+        ResponseApi responseApi = new ResponseApi();
+        responseApi.setCode(String.valueOf(HttpStatus.OK.value()));
+        responseApi.setMessage(Constants.RESPONSE_OK);
+        User user = userLogin.getUserLogin(request);
+        Sort sort = getSort(isSort);
+        Sort sortDE = getSortDE(isSort);
+        Pageable pageRequest = null;
+
+        List<UUID> idCategory =StringUtil.slipUUIDArr(categoriesId);
+        List<EnumCoreKpiType> enumCoreKpiTypes = new ArrayList<>();
+        enumCoreKpiTypes.add(EnumCoreKpiType.HITRATE_AGG);
+        enumCoreKpiTypes.add(EnumCoreKpiType.LVL_DISTURBANCE_AGG);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD_CHILD_WIP);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD_CHILD_AVG_LEAD_TIME);
+        enumCoreKpiTypes.add(EnumCoreKpiType.CFD_CHILD_COMPLETED_ITEMS);
+        enumCoreKpiTypes.add(EnumCoreKpiType.ADHERENCE_TO_SCHEDULES);
+        enumCoreKpiTypes.add(EnumCoreKpiType.ADHERENCE_TO_SCHEDULES_CHILD);
+        Page<KpiEditorListDto> dtoPage = null;
+        String key = user.getLanguage();
+        if (user != null && user.isEnabled() && !user.getIsDeleted()) {
+            //VT - 5595
+            if (user.getLanguage().equalsIgnoreCase("EN")) {
+                if(idCategory == null){
+                    pageRequest = PageRequest.of(page - 1, pageSize, sort);
+                    dtoPage = kpiEditorRepository.getKpiEditorWithConditionRemakeIsNull(search, type, idCategory, enumCoreKpiTypes, pageRequest);
+                }
+                else {
+                    pageRequest = PageRequest.of(page - 1, pageSize, sort);
+                    dtoPage = kpiEditorRepository.getKpiEditorWithConditionRemake(search, type, idCategory, enumCoreKpiTypes, pageRequest);
+                }
+                } else {
+                if (idCategory == null) {
+                    pageRequest = PageRequest.of(page - 1, pageSize, sort);
+                    dtoPage = kpiEditorRepository.getKpiEditorWithConditionWithRemakeNull(search, type, idCategory, enumCoreKpiTypes, key, pageRequest);
+                } else {
+                    pageRequest = PageRequest.of(page - 1, pageSize, sortDE);
+                    dtoPage = kpiEditorRepository.getKpiEditorWithConditionWithRemake(search, type, idCategory, enumCoreKpiTypes, key, pageRequest);
+                }
+            }
+        }
+        responseApi.setData(dtoPage);
+        return responseApi;
+    }
+
+    @Override
+    public Optional<KpiEditor> findById(UUID kpiId) {
+        return kpiEditorRepository.findById(kpiId);
+    }
+
+    @Override
+    public List<KpiEditor> findAllKpiByIds(Set<UUID> kpiIds) {
+        return kpiEditorRepository.findAllByIdInAndIsDeletedFalse(kpiIds);
+    }
+
+    @Override
+    public List<SubTileDto> findSubTileByTeams(Set<UUID> teamIds) {
+        return kpiEditorRepository.findAllSubTileByTeamIds(teamIds);
+    }
+
+    @Override
+    public List<KpiEditorDto> listSubtileForTeam(Set<UUID> kpiIds, String s, UUID category) {
+        return kpiEditorRepository.findAllSubtile(kpiIds, s, category);
+    }
+
+    @Override
+    public List<KpiEditorDto> listSubtileForTeamDE(Set<UUID> kpiIds) {
+        return kpiEditorRepository.findAllSubtileDE(kpiIds);
+    }
+
+    @Override
+    public List<KpiEditorDto> listKpisNotAssignForTeam(Set<UUID> kpiIds, String s, Boolean type, UUID idCategory) {
+        return kpiEditorRepository.findAllByNotIn(kpiIds, s, type, idCategory);
+    }
+
+    @Override
+    public List<KpiEditorDto> listKpisNotAssignForTeamDE(Set<UUID> kpiIds, Boolean type, UUID idCategory) {
+        return kpiEditorRepository.findAllByNotInDE(kpiIds, type, idCategory);
+    }
+
+    @Override
+    public List<KpiEditor> findAllSubTileByTeamAndKpiIds(UUID teamId, Set<UUID> uuids) {
+        return kpiEditorRepository.findAllSubTileByTeamAndKpiIds(teamId, uuids);
+    }
+
+    @Override
+    public void saveAll(List<KpiEditor> subTiles) {
+        kpiEditorRepository.saveAll(subTiles);
+    }
+
+    @Override
+    public Set<KpiEditor> findAllSubTileBySourceTeamIdAndKpiId(UUID teamId, UUID kpiId) {
+        return kpiEditorRepository.findAllBySubKpiParentAndSubKpiTeamAndSubKpiTrue(kpiId, teamId);
+    }
+
+    @Override
+    public Set<UUID> getAllKpiIds() {
+        return kpiEditorRepository.getAllKpiIds();
+    }
+
+    @Override
+    public KpiEditor findByCoreKpi(EnumCoreKpiType coreKpiType) {
+        return kpiEditorRepository.findByCoreType(coreKpiType);
+    }
+
+    @Override
+    public Set<DetailKpiEditorDto> getAllKpiWithIds(Set<UUID> subParentIds) {
+        return kpiEditorRepository.getAllKpiWithIds(subParentIds);
+    }
+
+    // get Sort kpis
+    private Sort getSort(String isSort) {
+        Sort sort = Sort.by(Sort.Order.desc("coreKpi"), Sort.Order.asc("title"));
+        if (isSort != null) {
+            switch (isSort) {
+                case "TITLE": {
+                    sort = Sort.by(Sort.Order.asc("title"));
+                    break;
+                }
+                case "CATEGORY": {
+                    sort = Sort.by(Sort.Order.asc("kpiCategoryId.name"));
+                    break;
+                }
+                case "TYPE": {
+                    sort = Sort.by(Sort.Order.desc("coreKpi"));
+                    break;
+                }
+            }
+        }
+        return sort;
+    }
+
+    // get Sort title or sort category kpis
+    private Sort getSortDE(String isSort) {
+        Sort sort = Sort.by(Sort.Order.desc("coreKpi"), Sort.Order.asc("t2.translation"));
+        if (isSort != null) {
+            switch (isSort) {
+                case "TITLE":
+                    sort = Sort.by(Sort.Order.asc("t2.translation"));
+                    break;
+                case "CATEGORY":
+                    sort = Sort.by(Sort.Order.asc("t1.translation"));
+                    break;
+                case "TYPE":
+                    sort = Sort.by(Sort.Order.desc("coreKpi"));
+                    break;
+            }
+        }
+        return sort;
+    }
+
+    /**
+     * Update subtile by kpi.
+     *
+     * @return ResponseApi
+     */
+    @Override
+    public ResponseApi updateSubtileKpi() {
+        ResponseApi responseApi = new ResponseApi();
+        Set<UUID> setKpiIds = kpiEditorRepository.findAllKpiIds(false);
+        Set<KpiEditor> setKpi = kpiEditorRepository.findAllByIds(setKpiIds);
+        Set<KpiEditor> setSubtile = kpiEditorRepository.findAllSubtileByKpiIds(setKpiIds);
+        for (KpiEditor s : setSubtile) {
+            //Check kpi exits kpi-data
+            boolean checkKpi = this.checkKpiData(s.getId());
+            for (KpiEditor k : setKpi) {
+                if (s.getSubKpiParent().equals(k.getId())) {
+                    s = this.updateSubtile(checkKpi, s, k);
+                }
+            }
+        }
+        kpiEditorRepository.saveAll(setSubtile);
+        responseApi.setCode(String.valueOf(Constants.CODE_OK));
+        responseApi.setMessage(Constants.RESPONSE_ENTRY_OK);
+        return responseApi;
+    }
+
+    private KpiEditor updateSubtile(boolean check, KpiEditor s, KpiEditor k) {
+        if (!check) {
+            s.setKpiUnit(k.getKpiUnit());
+            s.setKpiValueIsInteger(k.getKpiValueIsInteger());
+            s.setKpiValueTimeReference(k.getKpiValueTimeReference());
+            s.setTargetValueType(k.getTargetValueType());
+            s.setActualValueResultCalculationLogic(k.getActualValueResultCalculationLogic());
+            s.setXUnitShowDate(k.getXUnitShowDate());
+            s.setXAxisValuesCalculation(k.getXAxisValuesCalculation());
+            s.setVisualizationTypeActual(k.getVisualizationTypeActual());
+            s.setVisualizationTypeTarget(k.getVisualizationTypeTarget());
+            s.setVisualizationTypeActualCalculated(k.getVisualizationTypeActualCalculated());
+            s.setAggregationLogicTarget(k.getAggregationLogicTarget());
+            s.setAggregationLogicActual(k.getAggregationLogicActual());
+            s.setTargetValueGlobalOne(k.getTargetValueGlobalOne());
+            s.setTargetValueGlobalYmin(k.getTargetValueGlobalYmin());
+            s.setTargetValueGlobalYmax(k.getTargetValueGlobalYmax());
+        }
+        s.setKpiCategoryId(k.getKpiCategoryId());
+        s.setKpiValueInsertionRefersCurrent(k.getKpiValueInsertionRefersCurrent());
+        s.setYMinmaxAutoadjustment(k.isYMinmaxAutoadjustment());
+        s.setYMin(k.getYMin());
+        s.setYMax(k.getYMax());
+        s.setStatusRuleRedWhenChildRed(k.getStatusRuleRedWhenChildRed());
+        s.setStatusRule(k.getStatusRule());
+        return s;
+    }
+
+}
